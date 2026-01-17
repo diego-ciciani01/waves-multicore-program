@@ -3,11 +3,10 @@ export OMP_NUM_THREADS=4
 MPI_PROCS=8
 export OMP_PLACES=cores
 export OMP_PROC_BIND=close
-
+export ONE_BIG_FILE=
 # --- MPI Run Flags ---
 MPIRUN_FLAGS = -np $(MPI_PROCS) \
-               --bind-to none
-
+               --bind-to core
 # --- Compiler Flags ---
 # Flags for MPI+OpenMP code
 # Uncomment and add extra flags if you need them
