@@ -93,22 +93,6 @@ int get_max_particles_count(
     return max_p;
 }
 
-/**
- * Fill the LUT for the sqrt values of distances.
- */
-__global__ 
-__launch_bounds__(BLOCKSIZE)
-void fill_sqrt_lut(
-    float* __restrict__ lut, 
-    int size)
-{
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < size) {
-        if (idx == 0) lut[idx] = 1.0f; // Prevent div by zero, though distance starts at 1
-        else lut[idx] = rsqrtf((float)idx); 
-    }
-}
-
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////// 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////// 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -118,7 +102,7 @@ void fill_sqrt_lut(
 /////////////////////////////////////// NO SHARED MEMORY IMPLEMENTATIONS /////////////////////////////////////////////
 
 /**
- * Simple bombardment phase management (no shared memory and no LUT) -> Slowest implementation of the bombardment phase.
+ * Simple bombardment phase management (no shared memory & no SoA) -> Slowest implementation of the bombardment phase.
  * Each thread will update the global memory and the input particles are in AoS format. 
  * Each thread will be responsible for a layer cell and iterate on all the particles of the current wave.
  */
@@ -139,46 +123,6 @@ void bombardment_kernel(
         int position = d_particles[i*2]; // impact position
         update(d_layer, layer_sz, layer_idx, position, energy);
     }
-}
-
-/**
- * A more advanced bombardment phase management using a LUT (lookup table) with precomputed square roots of distances.
- * This implementation still makes use of AoS formatted particles.
- * Improvents compared to @bombardment_kernel version:
- * - one global memory write after accumulating the energy on thread
- * - using LUT prevents multiple calculating sqrts for same values many times (much faster)
- */
-__global__ 
-__launch_bounds__(BLOCKSIZE)
-void bombardment_kernel_lut(
-    float *d_layer, 
-    int layer_sz, 
-    int *d_particles, 
-    int particles_sz, 
-    float *d_sqrt_lut)
-{
-    int layer_idx = threadIdx.x + blockIdx.x * blockDim.x;
-    if (layer_idx >= layer_sz) return;
-
-    float accumulated_energy = 0.0f;
-
-    for (int i = 0; i < particles_sz; i++){
-        int pos = d_particles[i*2];
-        float energy_base = ((float)d_particles[i*2 + 1] * 1000.0f) / layer_sz;
-
-        int distance = pos - layer_idx;
-        if ( distance < 0 ) distance = - distance;
-        distance = distance + 1;
-        
-        float inv_attenuacion = d_sqrt_lut[distance]; // lookup instead of calculating attenuation
-        float energy_k = energy_base * inv_attenuacion;
-
-        if (energy_k >= THRESHOLD / layer_sz || energy_k <= -THRESHOLD / layer_sz) {
-            accumulated_energy += energy_k;
-        }
-    }
-
-    d_layer[layer_idx] += accumulated_energy;
 }
 
 /**
@@ -259,9 +203,9 @@ void relaxation_kernel(
 __global__ 
 __launch_bounds__(BLOCKSIZE)
 void bombardment_kernelsh(
-    float *d_layer, 
+    float* __restrict__ d_layer, 
     int layer_sz, 
-    int *d_particles, 
+    int* __restrict__ d_particles, 
     int particles_sz)
 {
     extern __shared__ int sh_particles[];
@@ -497,7 +441,7 @@ void core(
 
         CUDA_CHECK(cudaMemcpy(d_particles, storms[i].posval, sizeof(int) * n_particles * 2, cudaMemcpyHostToDevice));
         // bombardment_kernel<<<grid, block>>>(d_layer, layer_size, d_particles, storms[i].size);
-        bombardment_kernelsh<<<grid, block, bomb_shmem>>>(d_layer, layer_size, d_particles, storms[i].size);
+        // bombardment_kernelsh<<<grid, block, bomb_shmem>>>(d_layer, layer_size, d_particles, storms[i].size);
         // bombardment_kernel_lut<<<grid, block, bomb_shmem>>>(d_layer, layer_size, d_particles, n_particles, d_sqrt_lut);
         CUDA_CHECK(cudaGetLastError()); 
         CUDA_CHECK(cudaDeviceSynchronize());  
