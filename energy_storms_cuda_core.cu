@@ -271,7 +271,7 @@ void relaxation_kernelsh(
         sh[0] = d_layer_in[global_idx - 1];
 
     // right ghost loading
-    if (threadIdx.x == blockDim.x - 1 && global_idx <= layer_sz - 2)
+    if (threadIdx.x == blockDim.x - 1 && global_idx < layer_sz - 1)
         sh[local_idx + 1] = d_layer_in[global_idx + 1];
 
     __syncthreads(); // ensures shared memory is filled before accessing it. 
@@ -288,6 +288,61 @@ void relaxation_kernelsh(
 }
 
 
+
+// __global__ 
+// __launch_bounds__(BLOCKSIZE)
+// void maxval_kernelsh(
+//     float* __restrict__ d_layer, 
+//     int layer_sz, 
+//     float* __restrict__ d_block_vals, 
+//     int* __restrict__ d_block_idxs) 
+// {
+//     // Shared memory to store values and indices
+//     extern __shared__ float s_vals[];
+//     int* s_idxs = (int*)&s_vals[blockDim.x];
+
+//     int tid = threadIdx.x;
+//     int global_idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+//     // 1. Initialize local max to very small number
+//     float my_val = -FLT_MAX;
+//     int my_idx = -1;
+
+//     // 2. Filter: Check "Local Peak" condition (val > left and val > right)
+//     // Matches logic: for(k=1; k<layer_size-1; k++)
+//     if (global_idx > 0 && global_idx < layer_sz - 1) {
+//         float val = d_layer[global_idx];
+//         float left = d_layer[global_idx - 1];
+//         float right = d_layer[global_idx + 1];
+
+//         if (val > left && val > right) {
+//             my_val = val;
+//             my_idx = global_idx;
+//         }
+//     }
+
+//     // Load into shared memory
+//     s_vals[tid] = my_val;
+//     s_idxs[tid] = my_idx;
+//     __syncthreads();
+
+//     // 3. Reduction in Shared Memory
+//     for (unsigned int s = blockDim.x / 2; s > 0; s >>= 1) {
+//         if (tid < s) {
+//             if (s_vals[tid + s] > s_vals[tid]) {
+//                 s_vals[tid] = s_vals[tid + s];
+//                 s_idxs[tid] = s_idxs[tid + s];
+//             }
+//         }
+//         __syncthreads();
+//     }
+
+//     // 4. Write result for this block to global memory
+//     if (tid == 0) {
+//         d_block_vals[blockIdx.x] = s_vals[0];
+//         d_block_idxs[blockIdx.x] = s_idxs[0];
+//     }
+// }
 
 __global__ 
 __launch_bounds__(BLOCKSIZE)
@@ -309,7 +364,6 @@ void maxval_kernelsh(
     int my_idx = -1;
 
     // 2. Filter: Check "Local Peak" condition (val > left and val > right)
-    // Matches logic: for(k=1; k<layer_size-1; k++)
     if (global_idx > 0 && global_idx < layer_sz - 1) {
         float val = d_layer[global_idx];
         float left = d_layer[global_idx - 1];
@@ -327,11 +381,15 @@ void maxval_kernelsh(
     __syncthreads();
 
     // 3. Reduction in Shared Memory
+    // FIX: Use volatile to ensure visibility on Fermi architecture
+    volatile float* v_s_vals = s_vals;
+    volatile int* v_s_idxs = s_idxs;
+
     for (unsigned int s = blockDim.x / 2; s > 0; s >>= 1) {
         if (tid < s) {
-            if (s_vals[tid + s] > s_vals[tid]) {
-                s_vals[tid] = s_vals[tid + s];
-                s_idxs[tid] = s_idxs[tid + s];
+            if (v_s_vals[tid + s] > v_s_vals[tid]) {
+                v_s_vals[tid] = v_s_vals[tid + s];
+                v_s_idxs[tid] = v_s_idxs[tid + s];
             }
         }
         __syncthreads();
@@ -339,8 +397,8 @@ void maxval_kernelsh(
 
     // 4. Write result for this block to global memory
     if (tid == 0) {
-        d_block_vals[blockIdx.x] = s_vals[0];
-        d_block_idxs[blockIdx.x] = s_idxs[0];
+        d_block_vals[blockIdx.x] = v_s_vals[0]; // Read from volatile
+        d_block_idxs[blockIdx.x] = v_s_idxs[0]; // Read from volatile
     }
 }
 
@@ -382,12 +440,12 @@ void core(
     size_t maxval_shmem = BLOCKSIZE * sizeof(float) + BLOCKSIZE * sizeof(int); 
 
     ///////////////////////// Maxval Alloc (start)
-    // float *d_block_max_vals;
-    // int *d_block_max_idxs; 
-    // CUDA_CHECK(cudaMalloc(&d_block_max_vals, grid.x * sizeof(float)));
-    // CUDA_CHECK(cudaMalloc(&d_block_max_idxs, grid.x * sizeof(int)));
-    // float *h_block_vals = (float*)malloc(grid.x * sizeof(float));
-    // int *h_block_idxs = (int*)malloc(grid.x * sizeof(int));
+    float *d_block_max_vals;
+    int *d_block_max_idxs; 
+    CUDA_CHECK(cudaMalloc(&d_block_max_vals, grid.x * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_block_max_idxs, grid.x * sizeof(int)));
+    float *h_block_vals = (float*)malloc(grid.x * sizeof(float));
+    int *h_block_idxs = (int*)malloc(grid.x * sizeof(int));
     ///////////////////////// Maxval Alloc (end)
 
     ///////////////////////// Max Particles Optimization (start)
@@ -461,42 +519,42 @@ void core(
 
         //////////////////////////////////////////////////////////////////
         // Maximum Value Location Phase 
-        // maxval_kernelsh<<<grid, block, maxval_shmem>>>(d_layer, layer_size, d_block_max_vals, d_block_max_idxs);
-        // CUDA_CHECK(cudaGetLastError());
-        // CUDA_CHECK(cudaDeviceSynchronize());
+        maxval_kernelsh<<<grid, block, maxval_shmem>>>(d_layer, layer_size, d_block_max_vals, d_block_max_idxs);
+        CUDA_CHECK(cudaGetLastError());
+        CUDA_CHECK(cudaDeviceSynchronize());
 
         // 2. Copy partial block results back to CPU
-        // CUDA_CHECK(cudaMemcpy(h_block_vals, d_block_max_vals, grid.x * sizeof(float), cudaMemcpyDeviceToHost));
-        // CUDA_CHECK(cudaMemcpy(h_block_idxs, d_block_max_idxs, grid.x * sizeof(int), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(h_block_vals, d_block_max_vals, grid.x * sizeof(float), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(h_block_idxs, d_block_max_idxs, grid.x * sizeof(int), cudaMemcpyDeviceToHost));
 
         // 3. Final reduction on CPU 
         // We initialize current max to what is already in maximum[i] (usually 0)
         // or a very small number if maximum[i] isn't initialized.
-        // float current_max = -FLT_MAX; 
-        // int current_pos = -1;
+        float current_max = -FLT_MAX; 
+        int current_pos = -1;
 
-        // for(int b = 0; b < grid.x; b++) {
-        //     if (h_block_vals[b] > current_max) {
-        //         current_max = h_block_vals[b];
-        //         current_pos = h_block_idxs[b];
-        //     }
-        // }
-        
-        // if (current_pos != -1) {
-        //      maximum[i] = current_max;
-        //      positions[i] = current_pos;
-        // }
-
-        // ==== SEQ Version 
-        CUDA_CHECK(cudaMemcpy(h_layer, d_layer, sizeof(float) * layer_size, cudaMemcpyDeviceToHost));   
-        for(k=1; k<layer_size-1; k++) {
-            if ( h_layer[k] > h_layer[k-1] && h_layer[k] > h_layer[k+1] ) {
-                if ( h_layer[k] > maximum[i] ) {
-                    maximum[i] = h_layer[k];
-                    positions[i] = k;
-                }
+        for(int b = 0; b < grid.x; b++) {
+            if (h_block_vals[b] > current_max) {
+                current_max = h_block_vals[b];
+                current_pos = h_block_idxs[b];
             }
         }
+        
+        if (current_pos != -1) {
+             maximum[i] = current_max;
+             positions[i] = current_pos;
+        }
+
+        // ==== SEQ Version 
+        // CUDA_CHECK(cudaMemcpy(h_layer, d_layer, sizeof(float) * layer_size, cudaMemcpyDeviceToHost));   
+        // for(k=1; k<layer_size-1; k++) {
+        //     if ( h_layer[k] > h_layer[k-1] && h_layer[k] > h_layer[k+1] ) {
+        //         if ( h_layer[k] > maximum[i] ) {
+        //             maximum[i] = h_layer[k];
+        //             positions[i] = k;
+        //         }
+        //     }
+        // }
         // ==== 
         //////////////////////////////////////////////////////////////////
 
