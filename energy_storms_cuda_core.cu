@@ -335,8 +335,11 @@ void maxval_kernelsh(
     int* __restrict__ d_block_idxs) 
 {
     // Shared memory to store values and indices
-    extern __shared__ float s_vals[];
-    int* s_idxs = (int*)&s_vals[blockDim.x];
+    // extern __shared__ float s_vals[];
+    // int* s_idxs = (int*)&s_vals[blockDim.x];
+    extern __shared__ char smem[];
+float* s_vals = (float*)smem;
+int* s_idxs = (int*)(s_vals + blockDim.x);
 
     int tid = threadIdx.x;
     int global_idx = blockIdx.x * blockDim.x + threadIdx.x;
