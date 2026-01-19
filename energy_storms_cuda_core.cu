@@ -250,79 +250,42 @@ void bombardment_kernelsh_soa(
  * Improvements over @relaxation_kernel:
  * - using shared memory prevents reading from global memory 
  */
- __global__
+__global__ 
 __launch_bounds__(BLOCKSIZE)
 void relaxation_kernelsh(
-    const float* __restrict__ d_layer_in,
-    float* __restrict__ d_layer_out,
-    int layer_sz)
+    const float* __restrict__ d_layer_in, 
+    float* __restrict__ d_layer_out, 
+    int layer_sz) 
 {
     extern __shared__ float sh[];
 
     int global_idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int local_idx  = threadIdx.x + 1;
+    int local_idx = threadIdx.x + 1;  // +1 because sh[0] is left ghost
 
-    // 🚫 EXIT EARLY — before touching shared memory
-    if (global_idx >= layer_sz) return;
+    // own thread value loading 
+    if (global_idx < layer_sz)
+        sh[local_idx] = d_layer_in[global_idx];
 
-    // load own value
-    sh[local_idx] = d_layer_in[global_idx];
-
-    // left ghost
+    // left ghost loading
     if (threadIdx.x == 0 && global_idx > 0)
         sh[0] = d_layer_in[global_idx - 1];
 
-    // right ghost
+    // right ghost loading
     if (threadIdx.x == blockDim.x - 1 && global_idx < layer_sz - 1)
         sh[local_idx + 1] = d_layer_in[global_idx + 1];
 
-    __syncthreads();
+    __syncthreads(); // ensures shared memory is filled before accessing it. 
 
-    if (global_idx == 0 || global_idx == layer_sz - 1) {
+    if (global_idx >= layer_sz) return; // out of bounds
+
+    // just copy first & last
+    if (global_idx == 0 || global_idx == layer_sz - 1){
         d_layer_out[global_idx] = d_layer_in[global_idx];
         return;
     }
 
-    d_layer_out[global_idx] =
-        (sh[local_idx - 1] + sh[local_idx] + sh[local_idx + 1]) / 3.0f;
+    d_layer_out[global_idx] = (sh[local_idx - 1] + sh[local_idx] + sh[local_idx + 1]) / 3.0f;
 }
-
-// __global__ 
-// __launch_bounds__(BLOCKSIZE)
-// void relaxation_kernelsh(
-//     const float* __restrict__ d_layer_in, 
-//     float* __restrict__ d_layer_out, 
-//     int layer_sz) 
-// {
-//     extern __shared__ float sh[];
-
-//     int global_idx = blockIdx.x * blockDim.x + threadIdx.x;
-//     int local_idx = threadIdx.x + 1;  // +1 because sh[0] is left ghost
-
-//     // own thread value loading 
-//     if (global_idx < layer_sz)
-//         sh[local_idx] = d_layer_in[global_idx];
-
-//     // left ghost loading
-//     if (threadIdx.x == 0 && global_idx > 0)
-//         sh[0] = d_layer_in[global_idx - 1];
-
-//     // right ghost loading
-//     if (threadIdx.x == blockDim.x - 1 && global_idx < layer_sz - 1)
-//         sh[local_idx + 1] = d_layer_in[global_idx + 1];
-
-//     __syncthreads(); // ensures shared memory is filled before accessing it. 
-
-//     if (global_idx >= layer_sz) return; // out of bounds
-
-//     // just copy first & last
-//     if (global_idx == 0 || global_idx == layer_sz - 1){
-//         d_layer_out[global_idx] = d_layer_in[global_idx];
-//         return;
-//     }
-
-//     d_layer_out[global_idx] = (sh[local_idx - 1] + sh[local_idx] + sh[local_idx + 1]) / 3.0f;
-// }
 
 
 
