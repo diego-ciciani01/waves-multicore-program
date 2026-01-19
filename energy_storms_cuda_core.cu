@@ -458,6 +458,8 @@ void core(
 
     /* 4. Storms simulation */
     for( i=0; i<num_storms; i++) {
+        
+        CUDA_CHECK(cudaMemset(d_layer, 0, sizeof(float) * layer_size));
         int n_particles = storms[i].size;
 
         //////////////////////////////////////////////////////////////////
