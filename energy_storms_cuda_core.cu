@@ -4,7 +4,7 @@
 #include <float.h>
 #include "energy_storms.h"
 
-#define BLOCKSIZE 256 // the number of threads per block 
+#define BLOCKSIZE 256// the number of threads per block 
 
 // Wrapper to CUDA calls, to show errors and avoid having to assign each cuda function to a cudaError_t variable. 
 #define CUDA_CHECK(err) \
@@ -13,21 +13,10 @@
         exit(EXIT_FAILURE); \
     }
 
-// TODO 
-// - documentation of kernels
-// - Should I disable L1 cache ? Checkthat 
-// - Where should I use Pinned Mem 
-// - Fare la reduction (vedi slide)
-// - Posso usare Const memory in qualche modo ? 
-// - Testare sul cluster 
-// - Provare a modificare il valore di BLOCKSIZE
-
 // Improvements for comparison:
 // - AoS -> SoA (+++)
 // - Using __restrict__ (++)
 // - Find max particles per storm Pre Main Loop (+) 
-// - Pointer swap d_layer <-> d_layer_copy instead of DevToDev Memcpy (+)
-
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////// 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -299,8 +288,8 @@ void maxval_kernelsh(
     // extern __shared__ float s_vals[];
     // int* s_idxs = (int*)&s_vals[blockDim.x];
     extern __shared__ char smem[];
-float* s_vals = (float*)smem;
-int* s_idxs = (int*)(s_vals + blockDim.x);
+    float* s_vals = (float*)smem;
+    int* s_idxs = (int*)(s_vals + blockDim.x);
 
     int tid = threadIdx.x;
     int global_idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -345,6 +334,7 @@ int* s_idxs = (int*)(s_vals + blockDim.x);
     }
 }
 
+
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -362,11 +352,12 @@ void core(
     int i, k;
     float *h_layer;
 
-    bool useSoA = true; 
-    bool usePinnedMemory = true;
-    bool useBombardmentSharedMem = true;
-    bool useRelaxationSharedMem = true;
-    bool useMaxvalSequential = false;
+    bool useSoA = true; // optimal: true
+    bool useSoaPinnedMemory = true; // optimal: true
+    bool useBombardmentSharedMem = true; // optimal: true
+    bool useRelaxationSharedMem = false; // optimal: false (no real changes)
+    bool useRelaxationSwap = false; // optimal: false (no real changes on gtx970)
+    bool useMaxvalSequential = true; // optimal: true (no real changes on gtx970)
 
     // Sequential code 
     if (useMaxvalSequential){
@@ -414,7 +405,7 @@ void core(
         CUDA_CHECK(cudaMalloc(&d_particle_val, sizeof(int) * max_particles));
 
 
-        if (!usePinnedMemory){
+        if (!useSoaPinnedMemory){
             // NON-PINNED MEMORY
             h_temp_pos = (int*)malloc(sizeof(int) * max_particles);
             h_temp_val = (int*)malloc(sizeof(int) * max_particles);
@@ -427,8 +418,7 @@ void core(
     ///////////////////////// AoS -> SoA Optimization (end)
 
 
-
-    /* 4. Storms simulation */
+    ////////////////////////////////////////////////////////////////////// SIMULATION BEGINS 
     for( i=0; i<num_storms; i++) {
         int n_particles = storms[i].size;
 
@@ -463,19 +453,21 @@ void core(
 
         //////////////////////////////////////////////////////////////////
         // Relaxation Phase
-        // CUDA_CHECK(cudaMemcpy(d_layer_copy, d_layer, sizeof(float) * layer_size, cudaMemcpyDeviceToDevice)); 
-        // relaxation_kernel<<<grid, block>>>(d_layer_copy, d_layer, layer_size);
-
-        if (!useRelaxationSharedMem) relaxation_kernel<<<grid, block>>>(d_layer, d_layer_copy, layer_size);
-        else relaxation_kernelsh<<<grid, block, relax_shmem>>>(d_layer, d_layer_copy, layer_size);
+        if (!useRelaxationSwap){
+            CUDA_CHECK(cudaMemcpy(d_layer_copy, d_layer, sizeof(float) * layer_size, cudaMemcpyDeviceToDevice)); 
+            if (!useRelaxationSharedMem) relaxation_kernel<<<grid, block>>>(d_layer_copy, d_layer, layer_size);
+            else relaxation_kernelsh<<<grid, block, relax_shmem>>>(d_layer_copy, d_layer, layer_size);
+        } else {
+            if (!useRelaxationSharedMem) relaxation_kernel<<<grid, block>>>(d_layer, d_layer_copy, layer_size);
+            else relaxation_kernelsh<<<grid, block, relax_shmem>>>(d_layer, d_layer_copy, layer_size);
+            // Pointer Swap (no cudaMemcpy before relaxation phase)
+            float *tmp = d_layer;
+            d_layer = d_layer_copy;
+            d_layer_copy = tmp;
+        }
 
         CUDA_CHECK(cudaGetLastError()); 
         CUDA_CHECK(cudaDeviceSynchronize());  
-
-        // Pointer Swap (no cudaMemcpy before relaxation phase)
-        float *tmp = d_layer;
-        d_layer = d_layer_copy;
-        d_layer_copy = tmp;
         //////////////////////////////////////////////////////////////////
 
 
@@ -520,9 +512,9 @@ void core(
         // ==== 
         }
         //////////////////////////////////////////////////////////////////
-
-
     }
+    ////////////////////////////////////////////////////////////////////// SIMULATION ENDS
+
 
     //////////////////////////////////////////////////////////////////
     // Cleanup
@@ -542,10 +534,10 @@ void core(
         free(h_layer);
     }
 
-    if (usePinnedMemory && useSoA){
+    if (useSoaPinnedMemory && useSoA){
         CUDA_CHECK(cudaFreeHost(h_temp_pos));
         CUDA_CHECK(cudaFreeHost(h_temp_val));
-    } else if (useSoA && !usePinnedMemory){
+    } else if (useSoA && !useSoaPinnedMemory){
         free(h_temp_pos);
         free(h_temp_val);
     }
