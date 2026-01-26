@@ -348,8 +348,8 @@ void core(
     bool useSoA = true; // optimal: true
     bool useSoaPinnedMemory = true; // optimal: true
     bool useBombardmentSharedMem = true; // optimal: true
-    bool useRelaxationSharedMem = true; // optimal: false (no real changes)
-    bool useRelaxationSwap = true; // optimal: false (no real changes on gtx970)
+    bool useRelaxationSharedMem = false; // optimal: false (no real changes)
+    bool useRelaxationSwap = false; // optimal: false (no real changes on gtx970)
     bool useMaxvalSequential = false; // optimal: true (no real changes on gtx970)
 
     // Sequential code 
