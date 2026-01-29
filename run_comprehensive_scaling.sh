@@ -45,17 +45,17 @@ fi
 if [ "$SIZE_MODE" == "small" ]; then
     BASE_LAYER_SIZE=100000
     BASE_TARGET_PARTICLES=60000
-    CORES_TO_TEST=(1 4 8 16 32 64)
+    CORES_TO_TEST=(1 4 8 16 32 64 128)
 
 elif [ "$SIZE_MODE" == "medium" ]; then
     BASE_LAYER_SIZE=500000
     BASE_TARGET_PARTICLES=160000
-    CORES_TO_TEST=(1 4 8 16 32 64)
+    CORES_TO_TEST=(1 4 8 16 32 64 128)
 
 elif [ "$SIZE_MODE" == "large" ]; then
     BASE_LAYER_SIZE=2000000
     BASE_TARGET_PARTICLES=300000
-    CORES_TO_TEST=(1 4 8 16 32 64)
+    CORES_TO_TEST=(1 4 8 16 32 64 128)
 else
     echo "ERRORE: SIZE_MODE deve essere small, medium o large"
     exit 1
