@@ -207,6 +207,15 @@ void bombardment_kernelsh_soa(
     int layer_idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (layer_idx >= layer_sz) return;
 
+    // Instead of each thread going to global memory for each particle, 
+    // a thread goes to global memory once, put it to shared memory and waits for the other threads.
+    // When each thread of the block has completed, each thread processes its layer cell.
+    // We then go next to the next tile.
+    // e.g. 1M layer size and 256 BLOCKSIZE.
+    // -> each thread is responsible for a single layer cell, and in each block 
+    // it will load a single value from global memory to shared memory. When all 256 threads
+    // have loaded into shared we perform a sync.
+    // Now each thread will update the layer cell with all the 256 particles that have been loaded into sh mem. 
     for (int tile = 0; tile < particles_sz; tile += blockDim.x) {
 
         int tidx = threadIdx.x;
@@ -278,6 +287,12 @@ void relaxation_kernelsh(
     d_layer_out[global_idx] = (sh[local_idx - 1] + sh[local_idx] + sh[local_idx + 1]) / 3.0f;
 }
 
+/**
+ * A max value reduction kernel used to find the max value across each block.
+ * The final calculation is left to the CPU that will find the max of maxes.  
+ * Before the reduction phase there is a filtering phase, where only local max are 
+ * taken into account 
+ */
 __global__ 
 __launch_bounds__(BLOCKSIZE)
 void maxval_kernelsh(
@@ -293,7 +308,7 @@ void maxval_kernelsh(
     int tid = threadIdx.x;
     int gid = blockIdx.x * blockDim.x + threadIdx.x;
 
-    float local_val = -FLT_MAX;
+    float local_val = -FLT_MAX; 
     int local_idx = -1;
 
     // Consider only local max  
@@ -308,11 +323,18 @@ void maxval_kernelsh(
         }
     }
 
+    // Write to shmem
     s_vals[tid] = local_val;
     s_idxs[tid] = local_idx;
     __syncthreads();
 
-    // Reduction 
+    // Reduction starting from half block size 
+    // e.g. BLOCKSIZE = 256 -> s = 128 in the first loop
+    // Let's take for example thread 0.
+    // thread 0 will compare its own value with thread 0 + 128 = 128. 
+    // thread 1 will compare its own value with thread 1 + 128 = 129
+    // ...
+    // thread 127 will compare its own value with thread 127 + 128 = 255 (last one in the block)
     for (unsigned int s = blockDim.x / 2; s > 0; s >>= 1) {
         if (tid < s) {
             if (s_vals[tid + s] > s_vals[tid]) {
@@ -323,7 +345,8 @@ void maxval_kernelsh(
         __syncthreads();
     }
 
-    // Write back to memory for this block 
+    // After log_2(BLOCKSIZE) steps thread 0 of each block will write the result to global memory so that the CPU
+    // can perform the last max finder across maxes.
     if (tid == 0) {
         d_block_vals[blockIdx.x] = s_vals[0];
         d_block_idxs[blockIdx.x] = s_idxs[0];
@@ -347,13 +370,13 @@ void core(
     int i, k;
     float *h_layer;
 
-    // Flags for setting up the run  
-    bool useSoA = true; // optimal: true
-    bool useSoaPinnedMemory = false; // optimal: true
-    bool useBombardmentSharedMem = false; // optimal: true
-    bool useRelaxationSharedMem = false; // optimal: false (no real changes)
-    bool useRelaxationSwap = true; // optimal: false (no real changes on gtx970)
-    bool useMaxvalSequential = false; // optimal: true (no real changes on gtx970)
+    // Flags for setting up the run (small dataset (layer_20k), big dataset (layer_1M+))
+    bool useSoA = true; // best on all datasets (true) 
+    bool useSoaPinnedMemory = false; // best on all datasets (false)
+    bool useBombardmentSharedMem = false; // small dataset (false) -> big dataset (true)
+    bool useRelaxationSharedMem = true; // best on all datasets (true)
+    bool useRelaxationSwap = true;  // best on all datasets (true)
+    bool useMaxvalSequential = false; // small dataset (false) -> big dataset (true)
 
     // Sequential code 
     if (useMaxvalSequential){
@@ -462,6 +485,9 @@ void core(
             else relaxation_kernelsh<<<grid, block>>>(d_layer, d_layer_copy, layer_size);
 
             // Pointer Swap (no cudaMemcpy before relaxation phase)
+            // Instead of copying data D2D we swap pointers, keeping in d_layer newer data and leaving d_layer_copy with older data.
+            // This works because d_layer_copy will be overwritten in the next loop.
+            // The efficiency of this is clearly visible across many storms, because without the ptr swap we would have a lot of cudaMemcpy D2D. 
             float *tmp = d_layer;
             d_layer = d_layer_copy;
             d_layer_copy = tmp;
