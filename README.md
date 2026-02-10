@@ -13,7 +13,7 @@ The simulation follows a three-stage process for each wave of particles:
 
 ---
 
-## 🛠 Compilation and Build System
+## Compilation and Build System
 The project uses a `Makefile` to manage different parallel implementations. Use the following commands to build the targets:
 
 ### General Commands
@@ -47,7 +47,7 @@ Leverages GPU acceleration:
 
 ---
 
-## 📖 Usage
+## Usage
 To run the simulation, use the following syntax:
 
 ```bash
